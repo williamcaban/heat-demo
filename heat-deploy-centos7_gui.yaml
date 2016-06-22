@@ -1,0 +1,128 @@
+heat_template_version: 2014-10-16
+description: Deploy CentOS7-1602 (with GUI)
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    # default: CentOS7-1602
+    default: mpod-sa-devbox-snap-160420
+  key_name:
+    type: string
+    description: SSH key to connect to the servers
+    default: mpod-key
+  instance_flavor:
+    type: string
+    description: flavor to be used by node
+    default: m1.small
+  private_network:
+    type: string
+    label: Private network name or ID
+    description: Network to attach instance to.
+    ## default: tenant1_net
+    default: dev_mpod_net
+
+resources:
+  userdata:
+    type: OS::Heat::MultipartMime
+    properties:
+      parts:
+      - config: { get_resource: user_firefly_config }
+      - config: { get_resource: instance_customization }
+      - config: { get_resource: done_message }
+
+  user_firefly_config:
+    type: OS::Heat::CloudConfig 
+    properties:
+      cloud_config:
+        merge_how: dict(recurse_array)+list(append)
+        users:
+          - default
+          - name: firefly
+            gecos: Firefly Educate
+            sudo: ALL=(ALL) NOPASSWD:ALL
+            lock_passwd: false
+            passwd: $1$lab$89a84YXJ0/sRp7gAga9Q./
+
+  instance_customization:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace:
+          params:
+            dummy    : ""
+          template: |
+            #!/bin/bash -v
+            ## yum install -y nano tree epel-release
+            # Disable SELINUX
+            setenforce Permissive
+            sed -i -e "s/SELINUX=enforcing/SELINUX=permissive/" /etc/selinux/config
+            ##
+            systemctl stop firewalld
+            systemctl disable firewalld
+            # Enable user/password authentication
+            sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/g' /etc/ssh/sshd_config
+            # Install and enable Docker
+            ## yum install -y docker
+            ## systemctl enable docker
+            ## systemctl start docker
+            # END
+
+  done_message:
+    type: OS::Heat::SoftwareConfig
+    properties:
+      config:
+        str_replace:
+          params:
+            dummy    : ""
+          template: |
+            #cloud-config
+            merge_how: dict(recurse_array)+list(append)
+            final_message: "DONE!!! After $UPTIME seconds this instance is ready for labs."
+            runcmd:
+              - [reboot]
+  centos_gui:
+    type: OS::Nova::Server
+    properties:
+      flavor: { get_param: instance_flavor }
+      image: { get_param: image }
+      key_name: { get_param: key_name }
+      #name: my_centos_gui
+      networks:
+        - network: { get_param: private_network }
+      security_groups:
+        - { get_resource: centos_gui_secgroup }
+      user_data_format: RAW
+      user_data: { get_resource: userdata }
+
+  centos_gui_secgroup:
+     type: OS::Neutron::SecurityGroup
+     properties:
+       description: Allow SSH HTTP HTTPS
+       rules:
+          - direction: ingress
+            remote_ip_prefix: 0.0.0.0/0
+            protocol: icmp
+          - direction: ingress
+            remote_ip_prefix: 0.0.0.0/0
+            protocol: tcp
+            port_range_min: 22
+            port_range_max: 22
+          - direction: ingress
+            remote_ip_prefix: 0.0.0.0/0
+            protocol: tcp
+            port_range_min: 80
+            port_range_max: 80
+          - direction: ingress
+            remote_ip_prefix: 0.0.0.0/0
+            protocol: tcp
+            port_range_min: 443
+            port_range_max: 443
+
+outputs:
+  centos_gui_private_ip:
+    description: IP address of centos_gui in private network
+    value: { get_attr: [ centos_gui, first_address ] }
+
+#
+# END OF FILE
+#
