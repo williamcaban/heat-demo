@@ -1,0 +1,149 @@
+heat_template_version: 2014-10-16
+description: Deploy wordpress and mysql on separate nodes and configure both
+parameters:
+  image:
+    type: string
+    description: Image used for servers
+    default: Ubuntu-14.04-x86_64
+  key:
+    type: string
+    description: SSH key to connect to the servers
+    default: mpod-key
+  apache_flavor:
+    type: string
+    description: flavor used by Apache server
+    default: m1.small
+  mysql_flavor:
+    type: string
+    description: flavor used by MySQL server
+    default: m1.small
+  private_network:
+    type: string
+    label: Private network name or ID
+    description: Network to attach instance to.
+    default: dev_mpod_net
+  private_subnet_id:
+    type: string
+    label: Private subnetwork ID
+    description: Subnet to attache instance to
+    default: 318dc8ff-9231-435c-a25a-418c38151b3c
+ 
+resources:
+  mysql_eth0:
+    type: OS::Neutron::Port 
+    properties:
+      network: { get_param: private_network }
+      security_groups: 
+        - { get_resource: mysql_secgroup }
+      fixed_ips:
+       - subnet_id: { get_param: private_subnet_id }
+ 
+  mysql:
+    type: OS::Nova::Server
+    properties:
+      flavor: { get_param: mysql_flavor }
+      image: { get_param: image }
+      key_name: { get_param: key }
+      name: mysql
+      networks:
+        - port: { get_resource: mysql_eth0 }
+      user_data_format: RAW
+      user_data:
+            str_replace:
+              template: |
+                #!/bin/bash -v
+                apt-get update
+                debconf-set-selections <<< 'mysql-server mysql-server/root_password password MyPass'
+                debconf-set-selections <<< 'mysql-server mysql-server/root_password_again password MyPass'
+                apt-get -y install mysql-server
+                echo "create database wordpress; grant all on wordpress.* to wordpress identified by 'wordpress'; flush privileges;" |mysql -u root -pMyPass
+                sed -i 's/bind-address/#bind-address/g' /etc/mysql/my.cnf
+                service mysql restart
+              params:
+                dummy: ""
+  apache:
+    type: OS::Nova::Server
+    depends_on: mysql
+    properties:
+      flavor: { get_param: apache_flavor }
+      image: { get_param: image }
+      key_name: { get_param: key }
+      name: apache
+      networks:
+        - network: { get_param: private_network }
+      security_groups:
+        - { get_resource: apache_secgroup }
+      user_data_format: RAW
+      user_data:
+            str_replace:
+              template: |
+                #!/bin/bash -v
+                apt-get update
+                apt-get -y install apache2 php5 libapache2-mod-php5 php5-mysql
+                echo "<?php phpinfo(); ?>" > /var/www/html/index.php
+                cd /var/www/html
+                wget https://wordpress.org/latest.tar.gz
+                tar -zxvf latest.tar.gz
+                cd wordpress
+                cp wp-config-sample.php wp-config.php
+                perl -pi -e "s/database_name_here/wordpress/g" wp-config.php
+                perl -pi -e "s/username_here/wordpress/g" wp-config.php
+                perl -pi -e "s/password_here/wordpress/g" wp-config.php
+                sed -i "s/localhost/DBHOST/g" wp-config.php
+                perl -i -pe'  BEGIN {    @chars = ("a" .. "z", "A" .. "Z", 0 .. 9); push @chars, split //, "!@#$%^&*()-_ []{}<>~\`+=,.;:/?|"; sub salt { join "", map $chars[ rand @chars ], 1 .. 64 } } s/put your unique phrase here/salt()/ge' wp-config.php
+                mkdir wp-content/uploads
+                chmod 755 wp-content/uploads
+              params:
+                DBHOST: { get_attr: [mysql, first_address] }
+ 
+  apache_secgroup:
+     type: OS::Neutron::SecurityGroup
+     properties:
+       rules:
+          - protocol: icmp
+            remote_ip_prefix: 0.0.0.0/0
+          - protocol: tcp
+            remote_ip_prefix: 0.0.0.0/0
+            port_range_min: 22
+            port_range_max: 22
+          - protocol: tcp
+            remote_ip_prefix: 0.0.0.0/0
+            port_range_min: 80
+            port_range_max: 80
+          - protocol: tcp
+            remote_ip_prefix: 0.0.0.0/0
+            port_range_min: 443
+            port_range_max: 443
+          - protocol: tcp
+            remote_ip_prefix: 0.0.0.0/0
+            port_range_min: 5000
+            port_range_max: 5000
+  mysql_secgroup:
+     type: OS::Neutron::SecurityGroup
+     properties:
+      rules:
+        - protocol: icmp
+          remote_ip_prefix: 0.0.0.0/0
+        - protocol: tcp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 0
+          port_range_max: 65535
+        - protocol: udp
+          remote_ip_prefix: 0.0.0.0/0
+          port_range_min: 0
+          port_range_max: 65535
+ 
+outputs:
+  instance_ip:
+    description: IP address of the deployed compute instance
+    value: { get_attr: [apache, first_address] }
+  instance_private_ip:
+    description: Private IP address of the deployed compute instance
+    value: { get_attr: [apache, networks, private, 0] }
+ 
+  mysql_ip:
+    description: IP address of the deployed compute instance
+    value: { get_attr: [mysql, first_address] }
+  mysql_ip:
+    description: Private IP address of the deployed compute instance
+    value: { get_attr: [mysql, networks, private, 0] }
